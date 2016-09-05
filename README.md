@@ -1,2 +1,3 @@
 # vftools
-An open source forensic toolkit built on dfVFS
+An open source tool set built on dfVFS. These tools are designed to be 
+Sleuthkit-esque. 
