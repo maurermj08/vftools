@@ -185,7 +185,10 @@ class DfvfsUtil(object):
         if timezone:
             timezone = pytz.timezone(timezone)
 
-        return datetime.datetime.fromtimestamp(epoch, timezone).isoformat()
+        if isinstance(epoch, str) and not epoch:
+            epoch = 0
+
+        return datetime.datetime.fromtimestamp(float(epoch), timezone).isoformat()
 
     def _print_file_entry(self, file_entry, depth=0, show_pathspec=True, display_root=True,
                           jinja_format='{{name}}\t{{pathspec}}'):
