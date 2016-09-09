@@ -7,13 +7,13 @@
 #  This code is based on code by Joachim Metz
 
 from __future__ import print_function
+import datetime
 import getpass
 import jinja2
 import logging
 import os
+import pytz
 import sys
-import pytsk3
-import datetime
 
 from dfvfs.credentials import manager as credentials_manager
 from dfvfs.helpers import source_scanner
@@ -46,6 +46,10 @@ class DfvfsUtil(object):
         super(DfvfsUtil, self).__init__()
         self._source_scanner = source_scanner.SourceScanner()
         self.settings = settings
+        self.env = jinja2.Environment()
+        self.env.filters['datetime'] = self.format_datetime
+
+        #filters['datetime'] = self.format_datetime
         if source:
             self.base_path_specs = self.get_base_pathspecs(source, interactive)
 
@@ -103,7 +107,7 @@ class DfvfsUtil(object):
 
         stat_object = file_entry.GetStat()
 
-        for attribute in [ 'mtime', 'atime', 'ctime', 'crtime', 'size', 'mode', 'gid']:
+        for attribute in [ 'mtime', 'atime', 'ctime', 'crtime', 'size', 'mode', 'uid', 'gid']:
             pathspec_information[attribute] = getattr(stat_object, attribute, '')
 
         pathspec_information['inode'] = getattr(stat_object, 'ino', '')
@@ -112,58 +116,27 @@ class DfvfsUtil(object):
         if type:
             if type == definitions.FILE_ENTRY_TYPE_DEVICE:
                 pathspec_information['type'] = 'device'
+                pathspec_information['legacy_type'] = 'b/b'
             if type == definitions.FILE_ENTRY_TYPE_DIRECTORY:
                 pathspec_information['type'] = 'dir'
+                pathspec_information['legacy_type'] = 'd/d'
             if type == definitions.FILE_ENTRY_TYPE_FILE:
                 pathspec_information['type'] = 'file'
+                pathspec_information['legacy_type'] = 'r/r'
             if type == definitions.FILE_ENTRY_TYPE_LINK:
                 pathspec_information['type'] = 'link'
+                pathspec_information['legacy_type'] = 'l/l'
             if type == definitions.FILE_ENTRY_TYPE_SOCKET:
                 pathspec_information['type'] = 'socket'
+                pathspec_information['legacy_type'] = 'h/h'
             if type == definitions.FILE_ENTRY_TYPE_PIPE:
                 pathspec_information['type'] = 'pipe'
-
-        # if file_entry.IsFile() and pathspec.type_indicator == u'TSK':
-        #     file_object = file_entry.GetFileObject()
-        #     tsk_object = file_object._tsk_file
-        #     file_type = tsk_object.info.meta.type
-        #     if file_type == None:
-        #         pathspec_information['meta_type'] = 'None'
-        #     elif file_type == pytsk3.TSK_FS_META_TYPE_REG:
-        #         pathspec_information['meta_type'] = 'File'
-        #     elif file_type == pytsk3.TSK_FS_META_TYPE_DIR:
-        #         pathspec_information['meta_type'] = 'Directory'
-        #     elif file_type == pytsk3.TSK_FS_META_TYPE_LNK:
-        #         pathspec_information['meta_type'] = 'Link'
-        #     else:
-        #         pathspec_information['meta_type'] = str(file_type)
-        #
-        #     pathspec_information['mtime'] = datetime.datetime.utcfromtimestamp(
-        #         tsk_object.info.meta.mtime).isoformat()
-        #     pathspec_information['atime'] = datetime.datetime.utcfromtimestamp(
-        #         tsk_object.info.meta.atime).isoformat()
-        #     pathspec_information['ctime'] = datetime.datetime.utcfromtimestamp(
-        #         tsk_object.info.meta.ctime).isoformat()
-        #     pathspec_information['crtime'] = datetime.datetime.utcfromtimestamp(
-        #         tsk_object.info.meta.crtime).isoformat()
-        #     pathspec_information['size'] = str(tsk_object.info.meta.size)
-        #     pathspec_information['uid'] = str(tsk_object.info.meta.uid)
-        #     pathspec_information['gid'] = str(tsk_object.info.meta.gid)
-        #     file_object.close()
-        #
-        # elif file_entry.IsDirectory():
-        #     pathspec_information['meta_type'] = 'Dir'
-        # elif file_entry.IsFile():
-        #     pathspec_information['meta_type'] = 'File'
-        #     # TODO Change this to use actual size
-        #     pathspec_information['size'] = [0]
-        # else:
-        #     pathspec_information['meta_type'] = 'Unk'
+                pathspec_information['legacy_type'] = 'p/p'
 
         return  pathspec_information
 
     def list_directory(self, pathspec=None, recursive=False, display=False,
-                       show_pathspec=True, information=False, jinja_format=None):
+                       show_pathspec=True, information=False, display_root=True, jinja_format=None):
         """Lists a directory using a pathspec or list of pathspecs"""
         directory_list = []
 
@@ -173,12 +146,13 @@ class DfvfsUtil(object):
             pathspec = [pathspec]
         for individual_pathspec in pathspec:
             directory_list.extend(self._list_directory(resolver.Resolver.OpenFileEntry(individual_pathspec),recursive,
-                                                       display, 0, show_pathspec, information, jinja_format))
+                                                       display, 0, show_pathspec, information, display_root,
+                                                       jinja_format))
 
         return directory_list
 
     def _list_directory(self, file_entry, recursive=False, display=False, depth=0,
-                        show_pathspec=True, information=False, jinja_format=None):
+                        show_pathspec=True, information=False, display_root=False, jinja_format=None):
         """Lists a directory using a file entry"""
         directory_list = []
         if information:
@@ -187,46 +161,71 @@ class DfvfsUtil(object):
             directory_list.append(file_entry.name)
 
         if display:
-            self._print_file_entry(file_entry, depth, show_pathspec, jinja_format)
+            self._print_file_entry(file_entry, depth, show_pathspec, display_root, jinja_format)
 
         if (recursive or depth == 0) and file_entry.IsDirectory():
             for sub_file_entry in file_entry.sub_file_entries:
-                directory_list.extend(self._list_directory(sub_file_entry, recursive, display,
-                                                           depth + 1, show_pathspec, information, jinja_format))
+                directory_list.extend(self._list_directory(sub_file_entry, recursive, display, depth + 1, show_pathspec,
+                                                           information, display_root, jinja_format))
 
         return directory_list
 
-    def print_pathspec(self, pathspec=None, jinja_format=None):
+    def print_pathspec(self, pathspec=None, display_root=True, jinja_format=None):
         """Prints one or more pathspecs to standard out"""
         if not pathspec:
             pathspec = self.base_path_specs
         if not isinstance(pathspec, list):
             pathspec = [pathspec]
         for individual_pathspec in pathspec:
-            self._print_file_entry(resolver.Resolver.OpenFileEntry(individual_pathspec), jinja_format=jinja_format)
+            self._print_file_entry(resolver.Resolver.OpenFileEntry(individual_pathspec), display_root=display_root,
+                                   jinja_format=jinja_format)
 
-    def _print_file_entry(self, file_entry, depth=0, show_pathspec=True, jinja_format=None):
-        """Prints a file entry to standard out"""
+    def format_datetime(self, epoch, timezone=None):
+        """Converts epoch time in seconds to ISO standard"""
+        if timezone:
+            timezone = pytz.timezone(timezone)
+
+        return datetime.datetime.fromtimestamp(epoch, timezone).isoformat()
+
+    def _print_file_entry(self, file_entry, depth=0, show_pathspec=True, display_root=True,
+                          jinja_format='{{name}}\t{{pathspec}}'):
+        """Prints a file entry to standard out """
+        if not display_root and depth == 0:
+            return
+        elif not display_root:
+            depth -= 1
+
         if jinja_format:
-            template = jinja2.Template(jinja_format)
+            template = self.env.from_string(jinja_format)
             information = self.get_pathspec_information(file_entry.path_spec)
+
+            # Adds a padded file_name to pretty print results
             information['padded_file_name'] = information['file_name'] + \
                                               (' ' * max(0, 32 - len(information['file_name'])))
 
-            print(template.render(information))
-        else:
-            name = file_entry.name
-            if depth == 0 and not name:
+            # Gets the file_name, setting root to '/' or path_spec parent location
+            information['name'] = file_entry.name
+            if depth == 0 and not information['name']:
                 if hasattr(file_entry.path_spec.parent, 'location'):
-                    name = file_entry.path_spec.parent.location
+                    information['name'] = file_entry.path_spec.parent.location
                 else:
-                    name = '/'
+                    information['name'] = '/'
+            if depth == 0 and not information['name']:
+                if hasattr(file_entry.path_spec.parent, 'location'):
+                    information['name'] = file_entry.path_spec.parent.location
+                else:
+                    information['name'] = '/'
 
-            if show_pathspec:
-                print((('  ' * depth) + u'{:32}' + ('  ' * max(4 - depth, 1)) +
-                       u'{}').format(name, self.encode_pathspec(file_entry.path_spec)))
+            # Gives the options of setting depth like in sleuthkit
+            information['depth'] = '+' * depth
+
+            information['legacy_type'] = ''
+            if information['type'] == 'dir':
+                information['legacy_type'] = 'd/d'
             else:
-                print((('  ' * depth) + u'{:32}').format(name))
+                information['legacy_type'] = 'r/r'
+
+            print(template.render(information))
 
     def _format_human_readable_size(self, size):
         """Formats the size as a human readable string.

@@ -19,7 +19,7 @@ setup(
         u'Operating System :: OS Independent',
         u'Programming Language :: Python',
     ],
-    scripts=[u'efetch'],
+    scripts=[u'vfcat', u'vfinfo', u'vfls'],
     zip_safe=False,
     install_requires=frozenset([u'argparse>=1.2.1',
                       u'dfvfs>=20150708',

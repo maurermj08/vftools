@@ -16,6 +16,7 @@
 import argparse
 import os
 import sys
+import pytz
 from dfvfs_utils.dfvfs_util import DfvfsUtil
 
 __version__ = '0.1.0'
@@ -33,10 +34,16 @@ if __name__ == "__main__":
     parser.add_argument(u'-n', u'--nopathspec',
                         help=u'Hides the pathspec',
                         action=u'store_false')
+    parser.add_argument(u'-q', u'--quotepathspec',
+                        help=u'Puts single quotes around the pathspec, ignored if nopathspec',
+                        action=u'store_true')
     parser.add_argument(u'-l', u'--longformat',
                         help=u'Display file details in long format:\n' +
                              u'type, inode, name, mod, acc, chg, cre, size, uid, gid.',
                         action=u'store_true')
+    parser.add_argument(u'-z', u'--timezone',
+                        help=u'The case sensitive tz database timezones, i.e. GMT, "America/Los_Angeles. Default UTC.',
+                        action=u'store', default=u'UTC')
     reload(sys)
     sys.setdefaultencoding('utf-8')
     args = parser.parse_args()
@@ -54,11 +61,25 @@ if __name__ == "__main__":
         dfvfs_util = DfvfsUtil(args.pathspec)
         pathspec = dfvfs_util.base_path_specs
 
-    jinja_format = None
+    try:
+        pytz.timezone(args.timezone)
+    except:
+        sys.stderr.write('Unknown timezone: ' + str(args.timezone) + '\n')
+        sys.stderr.write('Please see: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones\n')
+        sys.exit(1)
+
+    jinja_format = '{{ depth }}{% if depth %} {% endif %}{{legacy_type}} {{ inode }}:\t{{ name }}'
     if args.longformat:
-        jinja_format = '{{ type }}\t{{inode}}\t{{padded_file_name}}\t{{mtime}}\t{{atime}}\t{{ctime}}\t{{crtime}}' +\
+        jinja_format = '{{ depth }}{% if depth %} {% endif %}{{legacy_type}} {{ inode }}:\t{{ name }}' +\
+                       '\t{{mtime|datetime("' + args.timezone + '")}}\t{{atime|datetime("' + args.timezone + '")}}' +\
+                       '\t{{ctime|datetime("' + args.timezone + '")}}\t{{crtime|datetime("' + args.timezone + '")}}' + \
                        '\t{{size}}\t{{uid}}\t{{gid}}'
-        if args.nopathspec:
+
+    if args.nopathspec:
+        if args.quotepathspec:
+            jinja_format += """\t'{{pathspec}}'"""
+        else:
             jinja_format += '\t{{pathspec}}'
 
-    dfvfs_util.list_directory(pathspec, args.recursive, True, args.nopathspec, jinja_format=jinja_format)
+    dfvfs_util.list_directory(pathspec, args.recursive, True, args.nopathspec, display_root=False,
+                              jinja_format=jinja_format)
