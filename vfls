@@ -14,9 +14,16 @@
 # limitations under the License.
 
 import argparse
+import json
 import os
-import sys
 import pytz
+import sys
+import uuid
+try:
+  from elasticsearch import Elasticsearch
+  from elasticsearch import helpers
+except ImportError:
+  Elasticsearch = None
 from dfvfs_utils.dfvfs_util import DfvfsUtil
 
 __version__ = '0.1.0'
@@ -25,21 +32,39 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Lists the files and directories of an evidence item or pathspec.')
     parser.add_argument('pathspec', help=u'Encoded pathspec or path to evidence')
-    parser.add_argument(u'-v', u'--version',
-                        help=u'Prints version',
-                        action=u'store_true')
-    parser.add_argument(u'-r', u'--recursive',
-                        help=u'Recursively display directories',
+    parser.add_argument(u'-c', u'--custom', type=unicode,
+                        help=u'Outputs using a custom Jinja2 template, e.g. "{{ name }}, {{ pathspec }}".',
+                        action=u'store',
+                        default=False)
+
+    if Elasticsearch:
+        parser.add_argument(u'-e', u'--elastic', type=unicode,
+                            help=u'Outputs results to the specified Elasticsearch URL, e.g. localhost:9200.',
+                            action=u'store',
+                            default=False)
+        parser.add_argument(u'-i', u'--index', type=unicode,
+                            help=u'The Elasticsearch index.',
+                            action=u'store',
+                            default=False)
+
+    parser.add_argument(u'-l', u'--longformat',
+                        help=u'Display file details in long format:\n' +
+                             u'type, inode, name, mod, acc, chg, cre, size, uid, gid.',
                         action=u'store_true')
     parser.add_argument(u'-n', u'--nopathspec',
                         help=u'Hides the pathspec',
                         action=u'store_false')
+    parser.add_argument(u'-j', u'--json',
+                        help=u'Outputs data to json object.',
+                        action=u'store_true')
     parser.add_argument(u'-q', u'--quotepathspec',
                         help=u'Puts single quotes around the pathspec, ignored if nopathspec',
                         action=u'store_true')
-    parser.add_argument(u'-l', u'--longformat',
-                        help=u'Display file details in long format:\n' +
-                             u'type, inode, name, mod, acc, chg, cre, size, uid, gid.',
+    parser.add_argument(u'-r', u'--recursive',
+                        help=u'Recursively display directories',
+                        action=u'store_true')
+    parser.add_argument(u'-v', u'--version',
+                        help=u'Prints version',
                         action=u'store_true')
     parser.add_argument(u'-z', u'--timezone',
                         help=u'The case sensitive tz database timezones, i.e. GMT, "America/Los_Angeles. Default UTC.',
@@ -50,13 +75,24 @@ if __name__ == "__main__":
     if args.version:
         print args.version
 
+    number_of_output_modules = 0
+
+    for output_type in [ args.custom, args.elastic, args.longformat, args.json]:
+        if output_type:
+            number_of_output_modules += 1
+
+    if number_of_output_modules > 1:
+        sys.stderr.write('Only one output flag is allowed.\n')
+        sys.stderr.write('Output flags: -c custom, -e elastic, -l longformat, and -j json\n')
+        sys.exit(1)
+
     dfvfs_util = DfvfsUtil()
     pathspec = []
     try:
         pathspec = dfvfs_util.decode_pathspec(args.pathspec)
     except:
         if not os.path.isfile(args.pathspec) and not os.path.isdir(args.pathspec):
-            sys.stderr.write('Value "' + args.pathspec + '" is not a valid pathspec or file')
+            sys.stderr.write('Value "' + args.pathspec + '" is not a valid pathspec or file\n')
             sys.exit(1)
         dfvfs_util = DfvfsUtil(args.pathspec)
         pathspec = dfvfs_util.base_path_specs
@@ -68,18 +104,85 @@ if __name__ == "__main__":
         sys.stderr.write('Please see: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones\n')
         sys.exit(1)
 
-    jinja_format = '{{ depth }}{% if depth %} {% endif %}{{legacy_type}} {{ inode }}:\t{{ name }}'
-    if args.longformat:
-        jinja_format = '{{ depth }}{% if depth %} {% endif %}{{legacy_type}} {{ inode }}:\t{{ name }}' +\
-                       '\t{{mtime|datetime("' + args.timezone + '")}}\t{{atime|datetime("' + args.timezone + '")}}' +\
-                       '\t{{ctime|datetime("' + args.timezone + '")}}\t{{crtime|datetime("' + args.timezone + '")}}' + \
-                       '\t{{size}}\t{{uid}}\t{{gid}}'
+    if args.json:
+        print(json.dumps(dfvfs_util.list_directory(pathspec, args.recursive, information=True, display_root=False)))
+    elif args.elastic:
+        # TODO Change this to vfls_event once it is working with Efetch
+        doc_type = u'plaso_event'
 
-    if args.nopathspec:
-        if args.quotepathspec:
-            jinja_format += """\t'{{pathspec}}'"""
+        if not Elasticsearch:
+            sys.stderr.write('Elasticsearch python module is not currently installed.\n')
+            sys.stderr.write('To install run: "sudo pip install elasticsearch"\n')
+            sys.exit(1)
+
+        if args.index:
+            index = args.index.lower()
         else:
-            jinja_format += '\t{{pathspec}}'
+            index = uuid.uuid4().hex
 
-    dfvfs_util.list_directory(pathspec, args.recursive, True, args.nopathspec, display_root=False,
-                              jinja_format=jinja_format)
+        if args.elastic:
+            elasticsearch = Elasticsearch([args.elastic])
+        else:
+            elasticsearch = Elasticsearch()
+
+        _raw_field_mapping = {
+            u'plaso_event': {
+                u'dynamic_templates': [{
+                    u'strings': {
+                        u'fields': {
+                            u'raw': {
+                                u'type': u'string',
+                                u'index': u'not_analyzed',
+                                u'ignore_above': 10922
+                            }
+                        }
+                    }
+            }]
+            }
+        }
+
+        elasticsearch.indices.create(index=index, body=_raw_field_mapping, ignore=400)
+        queue = []
+        items = dfvfs_util.list_directory(pathspec, args.recursive, information=True, display_root=False)
+        total = len(items)
+
+        for item in items:
+            item[u'uuid'] = uuid.uuid4().hex
+            for time in [u'mtime', u'atime', u'ctime', u'crtime']:
+                item[u'datetime_' + time] = dfvfs_util.format_datetime(item[time], args.timezone)
+
+            queue.append({
+                u'_index': index,
+                u'_type': doc_type,
+                u'_id': item[u'uuid'],
+                u'_source': item
+            })
+
+            if queue == 10000:
+                helpers.bulk(elasticsearch, queue)
+                sys.stdout.write('.')
+                queue = []
+
+        if queue:
+            helpers.bulk(elasticsearch, queue)
+
+        print('Exported ' + str(total) + ' events to Elasticsearch index "' + str(index) + '"')
+    else:
+        if args.custom:
+            jinja_format = args.custom
+        elif args.longformat:
+            jinja_format = '{{ depth }}{% if depth %} {% endif %}{{legacy_type}} {{ inode }}:\t{{ name }}' +\
+                           '\t{{mtime|datetime("' + args.timezone + '")}}\t{{atime|datetime("' + args.timezone + '")}}' +\
+                           '\t{{ctime|datetime("' + args.timezone + '")}}\t{{crtime|datetime("' + args.timezone + '")}}' + \
+                           '\t{{size}}\t{{uid}}\t{{gid}}'
+        else:
+            jinja_format = '{{ depth }}{% if depth %} {% endif %}{{legacy_type}} {{ inode }}:\t{{ name }}'
+
+        if args.nopathspec and not args.custom:
+            if args.quotepathspec:
+                jinja_format += """\t'{{pathspec}}'"""
+            else:
+                jinja_format += '\t{{pathspec}}'
+
+        dfvfs_util.list_directory(pathspec, args.recursive, True, args.nopathspec, display_root=False,
+                                  jinja_format=jinja_format)

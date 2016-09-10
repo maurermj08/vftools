@@ -1,3 +1,3 @@
 # vftools
 An open source tool set built on dfVFS. These tools are designed to be 
-Sleuthkit-esque. 
+Sleuth kit-esque. 

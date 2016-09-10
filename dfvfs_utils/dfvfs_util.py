@@ -108,7 +108,7 @@ class DfvfsUtil(object):
         stat_object = file_entry.GetStat()
 
         for attribute in [ 'mtime', 'atime', 'ctime', 'crtime', 'size', 'mode', 'uid', 'gid']:
-            pathspec_information[attribute] = getattr(stat_object, attribute, '')
+            pathspec_information[attribute] = str(getattr(stat_object, attribute, ''))
 
         pathspec_information['inode'] = getattr(stat_object, 'ino', '')
 
@@ -156,7 +156,7 @@ class DfvfsUtil(object):
         """Lists a directory using a file entry"""
         directory_list = []
         if information:
-            directory_list.append(self.get_pathspec_information(file_entry.pathspec))
+            directory_list.append(self.get_pathspec_information(file_entry.path_spec))
         else:
             directory_list.append(file_entry.name)
 
@@ -198,37 +198,39 @@ class DfvfsUtil(object):
         elif not display_root:
             depth -= 1
 
-        if jinja_format:
-            template = self.env.from_string(jinja_format)
-            information = self.get_pathspec_information(file_entry.path_spec)
+        if not jinja_format:
+            jinja_format = '{{name}}\t{{pathspec}}'
 
-            # Adds a padded file_name to pretty print results
-            information['padded_file_name'] = information['file_name'] + \
-                                              (' ' * max(0, 32 - len(information['file_name'])))
+        template = self.env.from_string(jinja_format)
+        information = self.get_pathspec_information(file_entry.path_spec)
 
-            # Gets the file_name, setting root to '/' or path_spec parent location
-            information['name'] = file_entry.name
-            if depth == 0 and not information['name']:
-                if hasattr(file_entry.path_spec.parent, 'location'):
-                    information['name'] = file_entry.path_spec.parent.location
-                else:
-                    information['name'] = '/'
-            if depth == 0 and not information['name']:
-                if hasattr(file_entry.path_spec.parent, 'location'):
-                    information['name'] = file_entry.path_spec.parent.location
-                else:
-                    information['name'] = '/'
+        # Adds a padded file_name to pretty print results
+        information['padded_file_name'] = information['file_name'] + \
+                                          (' ' * max(0, 32 - len(information['file_name'])))
 
-            # Gives the options of setting depth like in sleuthkit
-            information['depth'] = '+' * depth
-
-            information['legacy_type'] = ''
-            if information['type'] == 'dir':
-                information['legacy_type'] = 'd/d'
+        # Gets the file_name, setting root to '/' or path_spec parent location
+        information['name'] = file_entry.name
+        if depth == 0 and not information['name']:
+            if hasattr(file_entry.path_spec.parent, 'location'):
+                information['name'] = file_entry.path_spec.parent.location
             else:
-                information['legacy_type'] = 'r/r'
+                information['name'] = '/'
+        if depth == 0 and not information['name']:
+            if hasattr(file_entry.path_spec.parent, 'location'):
+                information['name'] = file_entry.path_spec.parent.location
+            else:
+                information['name'] = '/'
 
-            print(template.render(information))
+        # Gives the options of setting depth like in sleuthkit
+        information['depth'] = '+' * depth
+
+        information['legacy_type'] = ''
+        if information['type'] == 'dir':
+            information['legacy_type'] = 'd/d'
+        else:
+            information['legacy_type'] = 'r/r'
+
+        print(template.render(information))
 
     def _format_human_readable_size(self, size):
         """Formats the size as a human readable string.
