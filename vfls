@@ -126,18 +126,38 @@ if __name__ == "__main__":
             elasticsearch = Elasticsearch()
 
         _raw_field_mapping = {
-            u'plaso_event': {
-                u'dynamic_templates': [{
-                    u'strings': {
-                        u'fields': {
-                            u'raw': {
-                                u'type': u'string',
-                                u'index': u'not_analyzed',
-                                u'ignore_above': 10922
+            u'mappings': {
+                u'plaso_event': {
+                    u'_source': {
+                      u'excludes': [u'attachment']
+                    },
+                    u'properties' : {
+                      u'attachment': {
+                          u'type': u'attachment',
+                          u'fields': {
+                                u'content': {u'store': u'no'},
+                                u'title': {u'store': u'yes'},
+                                u'date': {u'store': u'yes'},
+                                u'author': {u'store': u'yes'},
+                                u'keywords': {u'store': u'yes'},
+                                u'content_type': {u'store': u'yes'},
+                                u'content_length': {u'store': u'yes'},
+                                u'language': {u'store': u'yes'}
+                          }
+                      }
+                    },
+                    u'dynamic_templates': [{
+                        u'strings': {
+                            u'fields': {
+                                u'raw': {
+                                    u'type': u'string',
+                                    u'index': u'not_analyzed',
+                                    u'ignore_above': 10922
+                                }
                             }
                         }
-                    }
-            }]
+                }]
+                }
             }
         }
 
